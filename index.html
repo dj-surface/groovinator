@@ -1008,6 +1008,48 @@
         let stemRecorders = []; // GroovinatorWavRecorder or MediaRecorder instances for stems
         let stemChunks = {}; // Chunks for parallel stem recording
 
+        // ==========================================
+        // MIDI Output & DAW Sync Global State
+        // ==========================================
+        let midiOutputDevice = null;
+        let isMidiClockEnabled = false;
+        let isMidiOutKickEnabled = false;
+        let isMidiOutDrumsEnabled = false;
+        let isMidiOutSynthEnabled = false;
+        let isMidiOutBassEnabled = false;
+
+        // Converts pitch names (like "C4", "D#3") to MIDI pitch integers (0-127)
+        function noteNameToMidi(noteName) {
+            if (!noteName) return 60;
+            const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+            const match = noteName.match(/^([A-G]#?)(-?\d+)$/);
+            if (!match) return 60;
+            const note = match[1];
+            const octave = parseInt(match[2], 10);
+            const noteIndex = notes.indexOf(note);
+            return (octave + 1) * 12 + noteIndex;
+        }
+
+        // Schedules a MIDI Note On/Off pair aligned with AudioContext clock
+        function sendMidiNote(channel, note, velocity, time, duration) {
+            if (!midiOutputDevice) return;
+            
+            // Align audio context time to performance.now()
+            const nowMs = performance.now();
+            const delayMs = (time - ctx.currentTime) * 1000;
+            const noteOnTime = nowMs + delayMs;
+            const noteOffTime = noteOnTime + (duration * 1000);
+            
+            try {
+                // Note On
+                midiOutputDevice.send([0x90 | (channel - 1), note, velocity], noteOnTime);
+                // Note Off
+                midiOutputDevice.send([0x80 | (channel - 1), note, 0], noteOffTime);
+            } catch (err) {
+                console.error("Failed to send MIDI note:", err);
+            }
+        }
+
         // Visualizer Analyzers
         let masterGain = null;
         let analyser = null;
@@ -2190,6 +2232,20 @@
             currentStep = (currentStep + 1) % 32;
             const secondsPerBeat = 60.0 / bpm;
             const stepLength = secondsPerBeat / 4;
+
+            // High-Precision MIDI Clock Sync (24 pulses per beat, 6 pulses per 16th-note step)
+            if (isMidiClockEnabled && midiOutputDevice) {
+                const stepStartTime = nextStepTime;
+                const clockInterval = stepLength / 6;
+                const nowMs = performance.now();
+                const startDelayMs = (stepStartTime - ctx.currentTime) * 1000;
+                
+                for (let i = 0; i < 6; i++) {
+                    const clockTime = nowMs + startDelayMs + (i * clockInterval * 1000);
+                    midiOutputDevice.send([0xF8], clockTime);
+                }
+            }
+
             nextStepTime += stepLength;
         }
 
@@ -2200,6 +2256,9 @@
 
             if (shouldPlayKick) {
                 triggerKick(time, kIntensity);
+                if (isMidiOutKickEnabled && midiOutputDevice) {
+                    sendMidiNote(1, 36, 100, time, 0.1); // GM C1 (36) on Ch 1
+                }
             }
 
             // 2. Drums Sequencer Grid
@@ -2212,11 +2271,36 @@
             const playOpenHat = sequencerGrids.drums[3][stepIndex];
             const playHat = sequencerGrids.drums[4][stepIndex];
 
-            if (playHat) triggerDrums('hat', time, dIntensity);
-            if (playOpenHat) triggerDrums('openhat', time, dIntensity);
-            if (playClap) triggerDrums('clap', time, dIntensity);
-            if (playSnare) triggerDrums('snare', time, dIntensity);
-            if (playRide) triggerDrums('ride', time, dIntensity);
+            if (playHat) {
+                triggerDrums('hat', time, dIntensity);
+                if (isMidiOutDrumsEnabled && midiOutputDevice) {
+                    sendMidiNote(2, 42, 90, time, 0.05); // GM Hat (42) on Ch 2
+                }
+            }
+            if (playOpenHat) {
+                triggerDrums('openhat', time, dIntensity);
+                if (isMidiOutDrumsEnabled && midiOutputDevice) {
+                    sendMidiNote(2, 46, 95, time, 0.15); // GM OpenHat (46) on Ch 2
+                }
+            }
+            if (playClap) {
+                triggerDrums('clap', time, dIntensity);
+                if (isMidiOutDrumsEnabled && midiOutputDevice) {
+                    sendMidiNote(2, 39, 100, time, 0.15); // GM Clap (39) on Ch 2
+                }
+            }
+            if (playSnare) {
+                triggerDrums('snare', time, dIntensity);
+                if (isMidiOutDrumsEnabled && midiOutputDevice) {
+                    sendMidiNote(2, 38, 100, time, 0.12); // GM Snare (38) on Ch 2
+                }
+            }
+            if (playRide) {
+                triggerDrums('ride', time, dIntensity);
+                if (isMidiOutDrumsEnabled && midiOutputDevice) {
+                    sendMidiNote(2, 51, 85, time, 0.25); // GM Ride (51) on Ch 2
+                }
+            }
 
             // 3. Synth Pluck Melodic Pitch Sequencer
             const synthIntensity = intensities[2];
@@ -2225,6 +2309,10 @@
             if (synthNoteIndex !== null && synthNotesList[synthNoteIndex]) {
                 const note = synthNotesList[synthNoteIndex];
                 triggerSynth(note, time, synthIntensity);
+                if (isMidiOutSynthEnabled && midiOutputDevice) {
+                    const midiPitch = noteNameToMidi(note);
+                    sendMidiNote(3, midiPitch, 90, time, 0.2); // Synth Pluck on Ch 3
+                }
             }
 
             // 4. FM Bass Melodic Pitch Sequencer
@@ -2234,6 +2322,10 @@
             if (bassNoteIndex !== null && bassNotesList[bassNoteIndex]) {
                 const note = bassNotesList[bassNoteIndex];
                 triggerBass(note, time, bassIntensity);
+                if (isMidiOutBassEnabled && midiOutputDevice) {
+                    const midiPitch = noteNameToMidi(note);
+                    sendMidiNote(4, midiPitch, 100, time, 0.25); // FM Bass on Ch 4
+                }
             }
 
             // Sync visual playhead
@@ -2263,6 +2355,15 @@
                 clearInterval(schedulerIntervalId);
                 isPlaying = false;
                 
+                // Send MIDI Stop transport byte
+                if (isMidiClockEnabled && midiOutputDevice) {
+                    try {
+                        midiOutputDevice.send([0xFC]);
+                    } catch (err) {
+                        console.error("Failed to send MIDI Stop:", err);
+                    }
+                }
+                
                 playBtn.classList.remove('from-rose-500', 'to-orange-500');
                 playBtn.classList.add('from-emerald-500', 'to-teal-500');
                 playIcon.className = 'fa-solid fa-play';
@@ -2277,6 +2378,17 @@
                 
                 currentStep = 0;
                 nextStepTime = ctx.currentTime + 0.05;
+                
+                // Send MIDI Start & Initial Clock transport bytes
+                if (isMidiClockEnabled && midiOutputDevice) {
+                    try {
+                        midiOutputDevice.send([0xFA]); // Start
+                        midiOutputDevice.send([0xF8]); // Initial Tick
+                    } catch (err) {
+                        console.error("Failed to send MIDI Start:", err);
+                    }
+                }
+                
                 schedulerIntervalId = setInterval(scheduler, lookahead);
                 isPlaying = true;
 
@@ -4610,6 +4722,54 @@
                 });
             }
 
+            // MIDI Output Select & Toggles Listeners
+            const outputSelect = document.getElementById('midiOutputSelect');
+            if (outputSelect) {
+                outputSelect.addEventListener('change', () => {
+                    updateActiveMidiOutput();
+                });
+            }
+            
+            const clockToggle = document.getElementById('midiClockOutToggle');
+            if (clockToggle) {
+                clockToggle.addEventListener('change', (e) => {
+                    isMidiClockEnabled = e.target.checked;
+                    logMidiToConsole("Routing", `MIDI Clock Sync: ${isMidiClockEnabled ? 'Enabled' : 'Disabled'}`);
+                });
+            }
+            
+            const outKick = document.getElementById('midiOutKick');
+            if (outKick) {
+                outKick.addEventListener('change', (e) => {
+                    isMidiOutKickEnabled = e.target.checked;
+                    logMidiToConsole("Routing", `Kick MIDI Out: ${isMidiOutKickEnabled ? 'ON' : 'OFF'}`);
+                });
+            }
+            
+            const outDrums = document.getElementById('midiOutDrums');
+            if (outDrums) {
+                outDrums.addEventListener('change', (e) => {
+                    isMidiOutDrumsEnabled = e.target.checked;
+                    logMidiToConsole("Routing", `Drums MIDI Out: ${isMidiOutDrumsEnabled ? 'ON' : 'OFF'}`);
+                });
+            }
+            
+            const outSynth = document.getElementById('midiOutSynth');
+            if (outSynth) {
+                outSynth.addEventListener('change', (e) => {
+                    isMidiOutSynthEnabled = e.target.checked;
+                    logMidiToConsole("Routing", `Synth MIDI Out: ${isMidiOutSynthEnabled ? 'ON' : 'OFF'}`);
+                });
+            }
+            
+            const outBass = document.getElementById('midiOutBass');
+            if (outBass) {
+                outBass.addEventListener('change', (e) => {
+                    isMidiOutBassEnabled = e.target.checked;
+                    logMidiToConsole("Routing", `Bass MIDI Out: ${isMidiOutBassEnabled ? 'ON' : 'OFF'}`);
+                });
+            }
+
             // Traktor & DJ Controller Setup Guide Accordion Toggle
             const guideToggle = document.getElementById('traktorGuideToggle');
             const guideContent = document.getElementById('traktorGuideContent');
@@ -4644,10 +4804,30 @@
             updateMIDIStatus(false, "Failed to access MIDI hardware: " + msg);
         }
 
+        function updateActiveMidiOutput() {
+            const outputSelect = document.getElementById('midiOutputSelect');
+            if (!midiAccess || !outputSelect) {
+                midiOutputDevice = null;
+                return;
+            }
+            
+            const selectedId = outputSelect.value;
+            if (selectedId === 'none') {
+                midiOutputDevice = null;
+                logMidiToConsole("Routing", "MIDI Output Disabled");
+            } else {
+                midiOutputDevice = midiAccess.outputs.get(selectedId);
+                if (midiOutputDevice) {
+                    logMidiToConsole("Routing", `Active Output: ${midiOutputDevice.name}`);
+                }
+            }
+        }
+
         // Dynamically scan ports and bind message listeners
         function updateMIDIDevices() {
             if (!midiAccess) return;
             
+            // 1. Scan Inputs
             const inputs = midiAccess.inputs.values();
             const devicesList = document.getElementById('midiDevicesList');
             let deviceCount = 0;
@@ -4671,8 +4851,30 @@
                 devicesList.innerHTML = `<div class="space-y-2">${html}</div>`;
                 updateMIDIStatus(true, `Active: ${deviceCount} MIDI controller(s) connected`);
             } else {
-                devicesList.innerHTML = `<span class="text-slate-500 font-mono text-xs">// No MIDI controllers detected. Plug in your USB MIDI device and try again.</span>`;
+                devicesList.innerHTML = `<span class="text-slate-500 font-mono text-xs block p-2">// No MIDI controllers detected. Connect a controller and restart.</span>`;
                 updateMIDIStatus(false, "No MIDI devices connected. Connect a controller.");
+            }
+
+            // 2. Scan Outputs
+            const outputs = midiAccess.outputs.values();
+            const outputSelect = document.getElementById('midiOutputSelect');
+            if (outputSelect) {
+                const currentSelection = outputSelect.value;
+                outputSelect.innerHTML = '<option value="none">Disabled (No Output)</option>';
+                
+                for (let output of outputs) {
+                    const opt = document.createElement('option');
+                    opt.value = output.id;
+                    opt.textContent = output.name;
+                    outputSelect.appendChild(opt);
+                }
+                
+                outputSelect.value = currentSelection;
+                if (outputSelect.selectedIndex === -1) {
+                    outputSelect.value = "none";
+                }
+                
+                updateActiveMidiOutput();
             }
         }
 
@@ -5191,11 +5393,60 @@
                     <div id="midiStatusIndicator" class="h-3 w-3 rounded-full bg-amber-500 animate-pulse shadow-md shadow-amber-500/10"></div>
                 </div>
 
-                <!-- Input Devices List -->
+                <!-- Connected Input Devices List -->
                 <div>
-                    <h4 class="text-[10px] font-bold text-slate-500 tracking-wider uppercase mb-2">Connected Devices</h4>
+                    <h4 class="text-[10px] font-bold text-slate-500 tracking-wider uppercase mb-2">Connected Input Devices</h4>
                     <div id="midiDevicesList" class="space-y-2 max-h-[110px] overflow-y-auto text-xs bg-slate-950/20 p-1.5 rounded-xl border border-slate-800/40">
                         <span class="text-slate-500 font-mono text-xs block p-2">// No MIDI controllers detected. Connect a controller and restart.</span>
+                    </div>
+                </div>
+
+                <!-- MIDI Output & Clock Sync -->
+                <div>
+                    <h4 class="text-[10px] font-bold text-slate-500 tracking-wider uppercase mb-2">MIDI Output & Sync (To DAW)</h4>
+                    <div class="space-y-4 bg-slate-950/40 p-4 rounded-xl border border-slate-800/60">
+                        <!-- Output Port Selector -->
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <span class="text-xs text-slate-300 font-bold">Output Destination:</span>
+                            <select id="midiOutputSelect" class="bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300 rounded-lg px-2 py-1.5 outline-none transition focus:border-violet-500 w-full sm:w-60">
+                                <option value="none">Disabled (No Output)</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Clock Sync Toggle -->
+                        <div class="flex items-center justify-between border-t border-slate-800/60 pt-3">
+                            <div>
+                                <span class="text-xs text-slate-300 font-bold block">Send MIDI Clock Sync</span>
+                                <span class="text-[9px] text-slate-500 font-mono">Sync DAW playback & tempo (Sends Start/Stop/Clock)</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="midiClockOutToggle" class="sr-only peer">
+                                <div class="w-9 h-5 bg-slate-850 rounded-full peer peer-focus:outline-none after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-500 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600 peer-checked:after:translate-x-full peer-checked:after:bg-white border border-slate-800"></div>
+                            </label>
+                        </div>
+                        
+                        <!-- Note Toggles Grid -->
+                        <div class="border-t border-slate-800/60 pt-3">
+                            <span class="text-[10px] font-bold text-slate-500 tracking-wider uppercase mb-2 block">Track MIDI Note Output</span>
+                            <div class="grid grid-cols-2 gap-3 text-[11px] font-mono">
+                                <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-lg border border-slate-800/40">
+                                    <span class="font-bold text-kickNeon">KICK (Ch 1)</span>
+                                    <input type="checkbox" id="midiOutKick" class="rounded border-slate-800 bg-slate-950 text-violet-600 focus:ring-violet-500 h-4 w-4 accent-violet-600">
+                                </div>
+                                <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-lg border border-slate-800/40">
+                                    <span class="font-bold text-drumNeon">DRUMS (Ch 2)</span>
+                                    <input type="checkbox" id="midiOutDrums" class="rounded border-slate-800 bg-slate-950 text-violet-600 focus:ring-violet-500 h-4 w-4 accent-violet-600">
+                                </div>
+                                <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-lg border border-slate-800/40">
+                                    <span class="font-bold text-synthNeon">SYNTH (Ch 3)</span>
+                                    <input type="checkbox" id="midiOutSynth" class="rounded border-slate-800 bg-slate-950 text-violet-600 focus:ring-violet-500 h-4 w-4 accent-violet-600">
+                                </div>
+                                <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-lg border border-slate-800/40">
+                                    <span class="font-bold text-bassNeon">BASS (Ch 4)</span>
+                                    <input type="checkbox" id="midiOutBass" class="rounded border-slate-800 bg-slate-950 text-violet-600 focus:ring-violet-500 h-4 w-4 accent-violet-600">
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
