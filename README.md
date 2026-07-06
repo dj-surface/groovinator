@@ -1,5 +1,8 @@
 # 🎛️ Groovinator — 8-Beat Multi-Preset Loop Generator
 
+🔗 **Live Web App:** [dj-surface.github.io/groovinator](https://dj-surface.github.io/groovinator)
+
+
 [![Web Audio API](https://img.shields.io/badge/Audio_Engine-Web_Audio_API-emerald.svg)](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API)
 [![Web MIDI API 1.0](https://img.shields.io/badge/MIDI-Web_MIDI_API-violet.svg)](https://developer.mozilla.org/en-US/docs/Web/API/Web_MIDI_API)
 [![PWA](https://img.shields.io/badge/PWA-Offline--First-blue.svg)](https://web.dev/progressive-web-apps/)
