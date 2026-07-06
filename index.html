@@ -246,8 +246,7 @@
                 <div class="flex items-center justify-between mb-3">
                     <span class="text-xs font-mono uppercase tracking-wider text-slate-400">Master Output Spectrum</span>
                     <div class="flex gap-4 text-xs font-mono text-slate-500">
-                        <span>L <span class="text-emerald-400" id="peakL">-00dB</span></span>
-                        <span>R <span class="text-emerald-400" id="peakR">-00dB</span></span>
+                        <span class="text-emerald-400" id="peakL">-00dB</span>
                     </div>
                 </div>
                 <div class="relative flex-grow min-h-[140px] bg-slate-950 rounded-xl overflow-hidden border border-slate-900">
@@ -4578,24 +4577,20 @@
             }
 
             const leftData = new Uint8Array(leftAnalyser.frequencyBinCount);
-            const rightData = new Uint8Array(rightAnalyser.frequencyBinCount);
             leftAnalyser.getByteFrequencyData(leftData);
-            rightAnalyser.getByteFrequencyData(rightData);
 
             let lSum = 0;
-            let rSum = 0;
             for (let i = 0; i < leftData.length; i++) {
                 lSum += leftData[i];
-                rSum += rightData[i];
             }
             const lAverage = lSum / leftData.length;
-            const rAverage = rSum / rightData.length;
             
             const dB_L = lAverage > 0 ? Math.round((lAverage / 255) * 100) : 0;
-            const dB_R = rAverage > 0 ? Math.round((rAverage / 255) * 100) : 0;
             
-            document.getElementById('peakL').innerText = lAverage > 0 ? `-${(100-dB_L).toString().padStart(2, '0')}dB` : '-INF';
-            document.getElementById('peakR').innerText = rAverage > 0 ? `-${(100-dB_R).toString().padStart(2, '0')}dB` : '-INF';
+            const peakLElement = document.getElementById('peakL');
+            if (peakLElement) {
+                peakLElement.innerText = lAverage > 0 ? `-${(100-dB_L).toString().padStart(2, '0')}dB` : '-INF';
+            }
 
             const bufferLength = analyser.frequencyBinCount;
             const dataArray = new Uint8Array(bufferLength);
